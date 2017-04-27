@@ -41,7 +41,7 @@ class FormExtractor implements FileVisitorInterface, LoggerAwareInterface, NodeV
      * @var FileSourceFactory
      */
     private $fileSourceFactory;
-    
+
     /**
      * @var DocParser
      */
@@ -210,7 +210,7 @@ class FormExtractor implements FileVisitorInterface, LoggerAwareInterface, NodeV
     }
 
     /**
-     * This parses any Node of type choices. 
+     * This parses any Node of type choices.
      *
      * Returning true means either that regardless of whether
      * parsing has occurred or not, the enterNode function should move on to the next node item.
@@ -252,7 +252,7 @@ class FormExtractor implements FileVisitorInterface, LoggerAwareInterface, NodeV
     }
 
     /**
-     * This parses any Node of type attr 
+     * This parses any Node of type attr
      *
      * Returning true means either that regardless of whether
      * parsing has occurred or not, the enterNode function should move on to the next node item.
@@ -346,7 +346,7 @@ class FormExtractor implements FileVisitorInterface, LoggerAwareInterface, NodeV
             $docComment = $item->key->getDocComment();
         }
 
-        if (!$docComment) {
+        if (!$docComment && is_object($item->value)) {
             $docComment = $item->value->getDocComment();
         }
 
