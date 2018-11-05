@@ -19,15 +19,13 @@
 namespace JMS\TranslationBundle\Tests\Translation;
 
 use JMS\TranslationBundle\Model\Message;
-
 use JMS\TranslationBundle\Model\MessageCatalogue;
-
-use Symfony\Component\HttpKernel\Log\NullLogger;
-
+use JMS\TranslationBundle\Tests\BaseTestCase;
+use Psr\Log\NullLogger;
 use JMS\TranslationBundle\Translation\Extractor\FileExtractor;
 use JMS\TranslationBundle\Translation\ExtractorManager;
 
-class ExtractorManagerTest extends \PHPUnit_Framework_TestCase
+class ExtractorManagerTest extends BaseTestCase
 {
     /**
      * @expectedException \InvalidArgumentException
@@ -41,7 +39,7 @@ class ExtractorManagerTest extends \PHPUnit_Framework_TestCase
 
     public function testOnlySomeExtractorsEnabled()
     {
-        $foo = $this->getMock('JMS\TranslationBundle\Translation\ExtractorInterface');
+        $foo = $this->createMock('JMS\TranslationBundle\Translation\ExtractorInterface');
         $foo
             ->expects($this->never())
             ->method('extract')
@@ -49,7 +47,7 @@ class ExtractorManagerTest extends \PHPUnit_Framework_TestCase
 
         $catalogue = new MessageCatalogue();
         $catalogue->add(new Message('foo'));
-        $bar = $this->getMock('JMS\TranslationBundle\Translation\ExtractorInterface');
+        $bar = $this->createMock('JMS\TranslationBundle\Translation\ExtractorInterface');
         $bar
             ->expects($this->once())
             ->method('extract')
@@ -65,12 +63,55 @@ class ExtractorManagerTest extends \PHPUnit_Framework_TestCase
         $this->assertEquals($catalogue, $manager->extract());
     }
 
+    public function testReset()
+    {
+        $foo = $this->createMock('JMS\TranslationBundle\Translation\ExtractorInterface');
+        $logger = new NullLogger();
+
+        $extractor = new FileExtractor(new \Twig_Environment(new \Twig_Loader_Array(array())), $logger, array());
+        $extractor->setExcludedNames(array('foo', 'bar'));
+        $extractor->setExcludedDirs(array('baz'));
+
+        $manager = $this->getManager($extractor, array(
+            'foo' => $foo,
+        ));
+        $manager->setEnabledExtractors(array('foo' => true));
+        $manager->setDirectories(array('/'));
+
+        $managerReflection   = new \ReflectionClass($manager);
+        $extractorReflection = new \ReflectionClass($extractor);
+
+        $enabledExtractorsProperty = $managerReflection->getProperty('enabledExtractors');
+        $enabledExtractorsProperty->setAccessible(true);
+
+        $directoriesProperty = $managerReflection->getProperty('directories');
+        $directoriesProperty->setAccessible(true);
+
+        $excludedNamesProperty = $extractorReflection->getProperty('excludedNames');
+        $excludedNamesProperty->setAccessible(true);
+
+        $excludedDirsProperty = $extractorReflection->getProperty('excludedDirs');
+        $excludedDirsProperty->setAccessible(true);
+
+        $this->assertEquals(array('foo' => true), $enabledExtractorsProperty->getValue($manager));
+        $this->assertEquals(array('/'), $directoriesProperty->getValue($manager));
+        $this->assertEquals(array('foo', 'bar'), $excludedNamesProperty->getValue($extractor));
+        $this->assertEquals(array('baz'), $excludedDirsProperty->getValue($extractor));
+
+        $manager->reset();
+
+        $this->assertEquals(array(), $enabledExtractorsProperty->getValue($manager));
+        $this->assertEquals(array(), $directoriesProperty->getValue($manager));
+        $this->assertEquals(array(), $excludedNamesProperty->getValue($extractor));
+        $this->assertEquals(array(), $excludedDirsProperty->getValue($extractor));
+    }
+
     private function getManager(FileExtractor $extractor = null, array $extractors = array())
     {
         $logger = new NullLogger();
 
         if (null === $extractor) {
-            $extractor = new FileExtractor(new \Twig_Environment(), $logger, array());
+            $extractor = new FileExtractor(new \Twig_Environment(new \Twig_Loader_Array(array())), $logger, array());
         }
 
         return new ExtractorManager($extractor, $logger, $extractors);

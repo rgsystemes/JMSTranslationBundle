@@ -19,7 +19,6 @@
 namespace JMS\TranslationBundle\Translation\Extractor\File;
 
 use JMS\TranslationBundle\Exception\RuntimeException;
-use JMS\TranslationBundle\Model\FileSource;
 use JMS\TranslationBundle\Model\Message;
 use JMS\TranslationBundle\Annotation\Meaning;
 use JMS\TranslationBundle\Annotation\Desc;
@@ -28,192 +27,265 @@ use Doctrine\Common\Annotations\DocParser;
 use JMS\TranslationBundle\Model\MessageCatalogue;
 use JMS\TranslationBundle\Translation\Extractor\FileVisitorInterface;
 use JMS\TranslationBundle\Logger\LoggerAwareInterface;
-use Symfony\Component\HttpKernel\Log\LoggerInterface;
+use JMS\TranslationBundle\Translation\FileSourceFactory;
+use PhpParser\Comment\Doc;
+use PhpParser\Node;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor;
+use Psr\Log\LoggerInterface;
+use Symfony\Component\HttpKernel\Kernel;
 
-class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
+class FormExtractor implements FileVisitorInterface, LoggerAwareInterface, NodeVisitor
 {
+    /**
+     * @var FileSourceFactory
+     */
+    private $fileSourceFactory;
+    
+    /**
+     * @var DocParser
+     */
     private $docParser;
+
+    /**
+     * @var NodeTraverser
+     */
     private $traverser;
+
+    /**
+     * @var \SplFileInfo
+     */
     private $file;
+
+    /**
+     * @var MessageCatalogue
+     */
     private $catalogue;
-    private $namespace = '';
-    private $useStatements = array();
-    private $inMethod = false;
-    private $localFormBuilderVars;
-    private $localOptionResolverVars;
+
+    /**
+     * @var LoggerInterface
+     */
     private $logger;
+
+    /**
+     * @var string
+     */
     private $defaultDomain;
+
+    /**
+     * @var string
+     */
     private $defaultDomainMessages;
 
-    public function __construct(DocParser $docParser)
+    /**
+     * FormExtractor constructor.
+     * @param DocParser $docParser
+     * @param FileSourceFactory $fileSourceFactory
+     */
+    public function __construct(DocParser $docParser, FileSourceFactory $fileSourceFactory)
     {
         $this->docParser = $docParser;
-
-        $this->traverser = new \PHPParser_NodeTraverser();
+        $this->fileSourceFactory = $fileSourceFactory;
+        $this->traverser = new NodeTraverser();
         $this->traverser->addVisitor($this);
     }
 
-
-    public function enterNode(\PHPParser_Node $node)
+    /**
+     * @param Node $node
+     * @return null
+     */
+    public function enterNode(Node $node)
     {
-        if ($node instanceof \PHPParser_Node_Stmt_Namespace) {
-            $this->namespace = implode('\\', $node->name->parts);
-            $this->useStatements = array();
-
-            return;
-        }
-
-        if ($node instanceof \PHPParser_Node_Stmt_UseUse) {
-            $this->useStatements[$node->alias] = implode('\\', $node->name->parts);
-
-            return;
-        }
-
-        if ($node instanceof \PHPParser_Node_Stmt_Class) {
+        if ($node instanceof Node\Stmt\Class_) {
             $this->defaultDomain = null;
             $this->defaultDomainMessages = array();
         }
 
-        if ($node instanceof \PHPParser_Node_Stmt_ClassMethod) {
-            $this->inMethod = true;
-            $this->localFormBuilderVars = array();
-            $this->localOptionResolverVars = array();
-
-            foreach ($node->params as $param) {
-                if (!$param->type instanceof \PHPParser_Node_Name) {
-                    continue;
-                }
-
-                $fqcn = $this->getFqcn($param->type->parts);
-                if ('Symfony\Component\Form\FormBuilder' ===  $fqcn ||
-                    'Symfony\Component\Form\FormBuilderInterface' === $fqcn) {
-                    $this->localFormBuilderVars[$param->name] = true;
-                } elseif ('Symfony\Component\OptionsResolver\OptionsResolverInterface' === $fqcn) {
-                    $this->localOptionResolverVars[$param->name] = true;
-                }
+        if ($node instanceof Node\Expr\MethodCall) {
+            $nodeName = $node->name instanceof Node\Identifier ? $node->name->name : $node->name;
+            if (!is_string($nodeName)) {
+                return;
             }
-            return;
+
+            $name = strtolower($nodeName);
+            if ('setdefaults' === $name || 'replacedefaults' === $name || 'setdefault' === $name) {
+                $this->parseDefaultsCall($node);
+                return;
+            }
         }
 
-        // the following is only relevant while in a method
-        if(!$this->inMethod) {
-            return;
-        }
-
-        if ($node instanceof \PHPParser_Node_Expr_MethodCall) {
-            if (!is_string($node->name)) {
-                return;
-            }
-
-            $name = strtolower($node->name);
-            if ('setdefaults' === $name || 'replacedefaults' === $name) {
-                $this->parseDefaultsCall($name, $node);
-                return;
-            }
-
-            if ('add' !== $name = strtolower($node->name)) {
-                return;
-            }
-
-            static $returningMethods = array(
-                'setdatamapper' => true, 'settypes' => true, 'setdata' => true, 'setreadonly' => true,
-                'setrequired' => true, 'seterrorbubbling' => true, 'addvalidator' => true,
-                'addeventlistener' => true, 'addeventsubscriber' => true, 'appendnormtransformer' => true,
-                'prependnormtransformer' => true, 'resetnormtransformers' => true, 'appendclienttransformer' => true,
-                'prependclienttransformer' => true, 'resetclienttransformers' => true, 'setattribute' => true,
-                'setemptydata' => true, 'add' => true, 'remove' => true,
-            );
-
-            $var = $node->var;
-            while ($var instanceof \PHPParser_Node_Expr_MethodCall) {
-                if (!isset($returningMethods[strtolower($var->name)])) {
-                    return;
-                }
-
-                $var = $var->var;
-            }
-
-            if (!$var instanceof \PHPParser_Node_Expr_Variable) {
-                return;
-            }
-
-            if (!isset($this->localFormBuilderVars[$var->name])) {
-                return;
-            }
-
-            // check if options were passed
-            if (!isset($node->args[2])) {
-                return;
-            }
-
-            // ignore everything except an array
-            if (!$node->args[2]->value instanceof \PHPParser_Node_Expr_Array) {
-                return;
-            }
-
+        if ($node instanceof Node\Expr\Array_) {
             // first check if a translation_domain is set for this field
-            $domain = null;
-            foreach ($node->args[2]->value->items as $item) {
-                if (!$item->key instanceof \PHPParser_Node_Scalar_String) {
-                    continue;
-                }
-
-                if ('translation_domain' === $item->key->value) {
-                    if (!$item->value instanceof \PHPParser_Node_Scalar_String) {
-                        continue;
-                    }
-
-                    $domain = $item->value->value;
-                }
-            }
+            $domain = $this->getDomain($node);
 
             // look for options containing a message
-            foreach ($node->args[2]->value->items as $item) {
-                if (!$item->key instanceof \PHPParser_Node_Scalar_String) {
+            foreach ($node->items as $item) {
+                if (!$item->key instanceof Node\Scalar\String_) {
                     continue;
                 }
 
-                if ('empty_value' === $item->key->value && $item->value instanceof \PHPParser_Node_Expr_ConstFetch
-                    && $item->value->name instanceof \PHPParser_Node_Name && 'false' === $item->value->name->parts[0]) {
-                	continue;
-                }
-
-                if ('choices' === $item->key->value && !$item->value instanceof \PHPParser_Node_Expr_Array) {
-                    continue;
-                }
-
-                if ('first_options' === $item->key->value && !$item->value instanceof \PHPParser_Node_Expr_Array) {
-                    continue;
-                }
-
-                if ('second_options' === $item->key->value && !$item->value instanceof \PHPParser_Node_Expr_Array) {
-                    continue;
-                }
-
-                if ('label' !== $item->key->value && 'empty_value' !== $item->key->value && 'choices' !== $item->key->value && 'first_options' !== $item->key->value && 'second_options' !== $item->key->value && 'invalid_message' !== $item->key->value) {
-                    continue;
-                }
-
-                if ('choices' === $item->key->value) {
-                    foreach ($item->value->items as $sitem) {
-                        $this->parseItem($sitem, $domain);
-                    }
-                } elseif ('first_options' === $item->key->value || 'second_options' === $item->key->value) {
-                    foreach ($item->value->items as $sitem) {
-                        if ('label' == $sitem->key->value) {
-                          $this->parseItem($sitem, $domain);
+                switch ($item->key->value) {
+                    case 'label':
+                        $this->parseItem($item, $domain);
+                        break;
+                    case 'invalid_message':
+                        $this->parseItem($item, 'validators');
+                        break;
+                    case 'placeholder':
+                    case 'empty_value':
+                        if ($this->parseEmptyValueNode($item, $domain)) {
+                            continue 2;
                         }
-                    }
-                } elseif ('invalid_message' === $item->key->value) {
-                    $this->parseItem($item, 'validators');
-                } else {
-                    $this->parseItem($item, $domain);
+                        $this->parseItem($item, $domain);
+                        break;
+                    case 'choices':
+                        if ($this->parseChoiceNode($item, $node, $domain)) {
+                            continue 2;
+                        }
+                        $this->parseItem($item, $domain);
+                        break;
+                    case 'attr':
+                        if ($this->parseAttrNode($item, $domain)) {
+                            continue 2;
+                        }
+                        $this->parseItem($item, $domain);
+                        break;
                 }
             }
         }
     }
 
-    private function parseDefaultsCall($name, \PHPParser_Node $node)
+    /**
+     * @param Node $node
+     * @return null|string
+     */
+    public function getDomain(Node $node)
+    {
+        $domain = null;
+
+        foreach ($node->items as $item) {
+            if (!$item->key instanceof Node\Scalar\String_) {
+                continue;
+            }
+
+            if ('translation_domain' === $item->key->value) {
+                if (!$item->value instanceof Node\Scalar\String_) {
+                    continue;
+                }
+
+                $domain = $item->value->value;
+            }
+        }
+
+        return $domain;
+    }
+
+    /**
+     * This parses any Node of type empty_value.
+     *
+     * Returning true means either that regardless of whether
+     * parsing has occurred or not, the enterNode function should move on to the next node item.
+     *
+     * @param Node $item
+     * @param $domain
+     * @return bool
+     * @internal
+     */
+    protected function parseEmptyValueNode(Node $item, $domain)
+    {
+        // Skip empty_value when false
+        if ($item->value instanceof Node\Expr\ConstFetch && $item->value->name instanceof Node\Name && 'false' === $item->value->name->parts[0]) {
+            return true;
+        }
+
+        // Parse when its value is an array of values
+        if ($item->value instanceof Node\Expr\Array_) {
+            foreach ($item->value->items as $subItem) {
+                $this->parseItem($subItem, $domain);
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * This parses any Node of type choices. 
+     *
+     * Returning true means either that regardless of whether
+     * parsing has occurred or not, the enterNode function should move on to the next node item.
+     *
+     * @param Node $item
+     * @param Node $node
+     * @param $domain
+     * @return bool
+     * @internal
+     */
+    protected function parseChoiceNode(Node $item, Node $node, $domain)
+    {
+        // Skip any choices that aren't arrays (ChoiceListInterface or Closure etc)
+        if (!$item->value instanceof Node\Expr\Array_) {
+            return true;
+        }
+
+        //Checking for the choice_as_values in the same form item
+        $choicesAsValues = false;
+        foreach ($node->items as $choiceItem) {
+            if ($choiceItem->key !== null && 'choices_as_values' === $choiceItem->key->value) {
+                $choicesAsValues = ($choiceItem->value->name->parts[0] === 'true');
+            }
+        }
+
+        foreach ($item->value->items as $subItem) {
+            // If we have a choice as value that differ from the Symfony default strategy
+            // we should invert the key and the value
+            if (Kernel::VERSION_ID < 30000 && $choicesAsValues === true || Kernel::VERSION_ID >= 30000) {
+                $newItem = clone $subItem;
+                $newItem->key = $subItem->value;
+                $newItem->value = $subItem->key;
+                $subItem = $newItem;
+            }
+            $this->parseItem($subItem, $domain);
+        }
+
+        return true;
+    }
+
+    /**
+     * This parses any Node of type attr 
+     *
+     * Returning true means either that regardless of whether
+     * parsing has occurred or not, the enterNode function should move on to the next node item.
+     *
+     * @param Node $item
+     * @param $domain
+     * @return bool
+     * @internal
+     */
+    protected function parseAttrNode(Node $item, $domain)
+    {
+        if (!$item->value instanceof Node\Expr\Array_) {
+            return true;
+        }
+
+        foreach ($item->value->items as $sitem) {
+            if ('placeholder' == $sitem->key->value) {
+                $this->parseItem($sitem, $domain);
+            }
+            if ('title' == $sitem->key->value) {
+                $this->parseItem($sitem, $domain);
+            }
+        }
+
+        return true;
+    }
+
+
+    /**
+     * @param Node $node
+     */
+    private function parseDefaultsCall(Node $node)
     {
         static $returningMethods = array(
             'setdefaults' => true, 'replacedefaults' => true, 'setoptional' => true, 'setrequired' => true,
@@ -222,7 +294,7 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
         );
 
         $var = $node->var;
-        while ($var instanceof \PHPParser_Node_Expr_MethodCall) {
+        while ($var instanceof Node\Expr\MethodCall) {
             if (!isset($returningMethods[strtolower($var->name)])) {
                 return;
             }
@@ -230,12 +302,7 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
             $var = $var->var;
         }
 
-
-        if (!$var instanceof \PHPParser_Node_Expr_Variable) {
-            return;
-        }
-
-        if (!isset($this->localOptionResolverVars[$var->name])) {
+        if (!$var instanceof Node\Expr\Variable) {
             return;
         }
 
@@ -244,54 +311,83 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
             return;
         }
 
+        if (isset($node->args[1])
+            && $node->args[0]->value instanceof Node\Scalar\String_
+            && $node->args[1]->value instanceof Node\Scalar\String_
+            && 'translation_domain' === $node->args[0]->value->value
+        ) {
+            $this->defaultDomain =  $node->args[1]->value->value;
+            return;
+        }
+
         // ignore everything except an array
-        if (!$node->args[0]->value instanceof \PHPParser_Node_Expr_Array) {
+        if (!$node->args[0]->value instanceof Node\Expr\Array_) {
             return;
         }
 
         // check if a translation_domain is set as a default option
         $domain = null;
         foreach ($node->args[0]->value->items as $item) {
-            if (!$item->key instanceof \PHPParser_Node_Scalar_String) {
+            if (!$item->key instanceof Node\Scalar\String_) {
                 continue;
             }
 
             if ('translation_domain' === $item->key->value) {
-                if (!$item->value instanceof \PHPParser_Node_Scalar_String) {
+                if (!$item->value instanceof Node\Scalar\String_) {
                     continue;
                 }
 
                 $this->defaultDomain = $item->value->value;
             }
         }
-
     }
 
+    /**
+     * @param $item
+     * @param null $domain
+     */
     private function parseItem($item, $domain = null)
     {
         // get doc comment
         $ignore = false;
-        $desc = $meaning = null;
-        if ($docComment = $item->value->getDocComment()) {
+        $desc = $meaning = $docComment = null;
+
+        if ($item->key) {
+            $docComment = $item->key->getDocComment();
+        }
+
+        if (!$docComment && $item->value) {
+            $docComment = $item->value->getDocComment();
+        }
+
+        $docComment = is_object($docComment) ? $docComment->getText() : null;
+
+        if ($docComment) {
+            if ($docComment instanceof Doc) {
+                $docComment = $docComment->getText();
+            }
             foreach ($this->docParser->parse($docComment, 'file '.$this->file.' near line '.$item->value->getLine()) as $annot) {
                 if ($annot instanceof Ignore) {
                     $ignore = true;
-                } else if ($annot instanceof Desc) {
+                } elseif ($annot instanceof Desc) {
                     $desc = $annot->text;
-                } else if ($annot instanceof Meaning) {
+                } elseif ($annot instanceof Meaning) {
                     $meaning = $annot->text;
                 }
             }
         }
 
-        if (!$item->value instanceof \PHPParser_Node_Scalar_String) {
+        // check if the value is explicitly set to false => e.g. for FormField that should be rendered without label
+        $ignore = $ignore || !$item->value instanceof Node\Scalar\String_ || $item->value->value == false;
+
+        if (!$item->value instanceof Node\Scalar\String_ && !$item->value instanceof Node\Scalar\LNumber) {
             if ($ignore) {
                 return;
             }
 
-            $message = sprintf('Unable to extract translation id for form label from non-string values, but got "%s" in %s on line %d. Please refactor your code to pass a string, or add "/** @Ignore */".', get_class($item->value), $this->file, $item->value->getLine());
+            $message = sprintf('Unable to extract translation id for form label/title/placeholder from non-string values, but got "%s" in %s on line %d. Please refactor your code to pass a string, or add "/** @Ignore */".', get_class($item->value), $this->file, $item->value->getLine());
             if ($this->logger) {
-                $this->logger->err($message);
+                $this->logger->error($message);
 
                 return;
             }
@@ -299,7 +395,7 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
             throw new RuntimeException($message);
         }
 
-        $source = new FileSource((string) $this->file, $item->value->getLine());
+        $source = $this->fileSourceFactory->create($this->file, $item->value->getLine());
         $id = $item->value->value;
 
         if (null === $domain) {
@@ -314,6 +410,13 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
         }
     }
 
+    /**
+     * @param string $id
+     * @param string $source
+     * @param null|string $domain
+     * @param null|string $desc
+     * @param null|string $meaning
+     */
     private function addToCatalogue($id, $source, $domain = null, $desc = null, $meaning = null)
     {
         if (null === $domain) {
@@ -335,6 +438,11 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
         $this->catalogue->add($message);
     }
 
+    /**
+     * @param \SplFileInfo $file
+     * @param MessageCatalogue $catalogue
+     * @param array $ast
+     */
     public function visitPhpFile(\SplFileInfo $file, MessageCatalogue $catalogue, array $ast)
     {
         $this->file = $file;
@@ -348,35 +456,50 @@ class FormExtractor implements FileVisitorInterface, \PHPParser_NodeVisitor
         }
     }
 
-    public function leaveNode(\PHPParser_Node $node)
+    /**
+     * @param Node $node
+     * @return null|\PhpParser\Node[]|void
+     */
+    public function leaveNode(Node $node)
     {
-        if ($node instanceof \PHPParser_Node_ClassMethod) {
-            $this->inMethod = false;
-
-            return;
-        }
     }
 
-    public function beforeTraverse(array $nodes) { }
-    public function afterTraverse(array $nodes) { }
-    public function visitFile(\SplFileInfo $file, MessageCatalogue $catalogue) { }
-    public function visitTwigFile(\SplFileInfo $file, MessageCatalogue $catalogue, \Twig_Node $ast) { }
-
-    private function getFqcn(array $parts)
+    /**
+     * @param array $nodes
+     * @return null|\PhpParser\Node[]|void
+     */
+    public function beforeTraverse(array $nodes)
     {
-        $alias = array_shift($parts);
-
-        if ('\\' === $alias[0]) {
-            return implode('\\', $parts);
-        }
-
-        if (isset($this->useStatements[$alias])) {
-            return $this->useStatements[$alias];
-        }
-
-        return $this->namespace.'\\'.implode('\\', $parts);
     }
 
+    /**
+     * @param array $nodes
+     * @return null|\PhpParser\Node[]|void
+     */
+    public function afterTraverse(array $nodes)
+    {
+    }
+
+    /**
+     * @param \SplFileInfo $file
+     * @param MessageCatalogue $catalogue
+     */
+    public function visitFile(\SplFileInfo $file, MessageCatalogue $catalogue)
+    {
+    }
+
+    /**
+     * @param \SplFileInfo $file
+     * @param MessageCatalogue $catalogue
+     * @param \Twig_Node $ast
+     */
+    public function visitTwigFile(\SplFileInfo $file, MessageCatalogue $catalogue, \Twig_Node $ast)
+    {
+    }
+
+    /**
+     * @param LoggerInterface $logger
+     */
     public function setLogger(LoggerInterface $logger)
     {
         $this->logger = $logger;

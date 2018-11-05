@@ -19,10 +19,10 @@
 namespace JMS\TranslationBundle\Tests\Model;
 
 use JMS\TranslationBundle\Model\FileSource;
-
 use JMS\TranslationBundle\Model\Message;
+use JMS\TranslationBundle\Tests\BaseTestCase;
 
-class MessageTest extends \PHPUnit_Framework_TestCase
+class MessageTest extends BaseTestCase
 {
     public function testCreate()
     {
@@ -80,8 +80,10 @@ class MessageTest extends \PHPUnit_Framework_TestCase
         $message = new Message('foo');
         $this->assertEquals(array(), $message->getSources());
 
-        $this->assertSame($message, $message->addSource($source = $this->getMock('JMS\TranslationBundle\Model\SourceInterface')));
+        $this->assertSame($message, $message->addSource($source = $this->createMock('JMS\TranslationBundle\Model\SourceInterface')));
         $this->assertSame(array($source), $message->getSources());
+        $this->assertSame($message, $message->setSources(array($source2 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface'))));
+        $this->assertSame(array($source2), $message->getSources());
     }
 
     public function testMerge()
@@ -89,16 +91,34 @@ class MessageTest extends \PHPUnit_Framework_TestCase
         $message = new Message('foo');
         $message->setDesc('foo');
         $message->setMeaning('foo');
-        $message->addSource($s1 = $this->getMock('JMS\TranslationBundle\Model\SourceInterface'));
+        $message->addSource($s1 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface'));
 
         $message2 = new Message('foo');
         $message2->setDesc('bar');
-        $message2->addSource($s2 = $this->getMock('JMS\TranslationBundle\Model\SourceInterface'));
+        $message2->addSource($s2 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface'));
 
         $message->merge($message2);
 
         $this->assertEquals('bar', $message->getDesc());
         $this->assertEquals('foo', $message->getMeaning());
+        $this->assertSame(array($s1, $s2), $message->getSources());
+    }
+
+    public function testMergeRememberDesc()
+    {
+        $message = new Message('foo_id');
+        $message->setDesc('foo_desc');
+        $message->setMeaning('foo_meaning');
+        $message->addSource($s1 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface'));
+
+        $message2 = new Message('foo_id');
+        $message2->setMeaning('bar_meaning');
+        $message2->addSource($s2 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface'));
+
+        $message->merge($message2);
+
+        $this->assertEquals('foo_desc', $message->getDesc());
+        $this->assertEquals('bar_meaning', $message->getMeaning());
         $this->assertSame(array($s1, $s2), $message->getSources());
     }
 
@@ -115,6 +135,24 @@ class MessageTest extends \PHPUnit_Framework_TestCase
         $message->mergeExisting($existingMessage);
 
         $this->assertEquals('bar', $message->getDesc());
+        $this->assertEquals('foobar', $message->getLocaleString());
+        $this->assertFalse($message->isNew());
+        $this->assertEquals(array(), $message->getSources());
+    }
+
+    public function testMergeScanned()
+    {
+        $message = new Message('foo');
+        $message->setLocaleString('foobar');
+        $message->setNew(false);
+        $message->addSource(new FileSource('foo/bar'));
+
+        $scannedMessage = new Message('foo');
+        $scannedMessage->setDesc('foobar');
+
+        $message->mergeScanned($scannedMessage);
+
+        $this->assertEquals('foobar', $message->getDesc());
         $this->assertEquals('foobar', $message->getLocaleString());
         $this->assertFalse($message->isNew());
         $this->assertEquals(array(), $message->getSources());
@@ -139,9 +177,9 @@ class MessageTest extends \PHPUnit_Framework_TestCase
     {
         $message = new Message('foo');
 
-        $s2 = $this->getMock('JMS\TranslationBundle\Model\SourceInterface');
+        $s2 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface');
 
-        $s1 = $this->getMock('JMS\TranslationBundle\Model\SourceInterface');
+        $s1 = $this->createMock('JMS\TranslationBundle\Model\SourceInterface');
         $s1
             ->expects($this->once())
             ->method('equals')
@@ -151,5 +189,19 @@ class MessageTest extends \PHPUnit_Framework_TestCase
 
         $message->addSource($s1);
         $this->assertTrue($message->hasSource($s2));
+    }
+
+    public function testGetLocaleString()
+    {
+        $message = new Message('foo');
+        $message->setDesc('bar');
+        $message->setNew(true);
+
+        $existingMessage = new Message('foo');
+        $existingMessage->setDesc('bar');
+        $existingMessage->setNew(false);
+
+        $this->assertEquals($message->getDesc(), $message->getLocaleString());
+        $this->assertEquals('', $existingMessage->getLocaleString());
     }
 }
