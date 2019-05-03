@@ -103,6 +103,7 @@
         <service id="jms_translation.extractor.file.default_php_extractor" class="%jms_translation.extractor.file.default_php_extractor%" public="false">
             <argument type="service" id="jms_translation.doc_parser" />
             <argument type="service" id="jms_translation.file_source_factory" />
+            <argument type="service" id="jms_translation.config_factory" />
             <tag name="jms_translation.file_visitor" />
         </service>
         <service id="jms_translation.extractor.file.form_extractor" class="%jms_translation.extractor.file.form_extractor.class%" public="false">
@@ -116,6 +117,7 @@
         <service id="jms_translation.extractor.file.twig_extractor" class="%jms_translation.extractor.file.twig_extractor%" public="false">
             <argument type="service" id="twig" />
             <argument type="service" id="jms_translation.file_source_factory" />
+            <argument type="service" id="jms_translation.config_factory" />
             <tag name="jms_translation.file_visitor" />
         </service>
         <service id="jms_translation.extractor.file.validation_extractor" class="%jms_translation.extractor.file.validation_extractor.class%" public="false">

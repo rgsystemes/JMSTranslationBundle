@@ -20,6 +20,7 @@ namespace JMS\TranslationBundle\Translation\Extractor\File;
 
 use JMS\TranslationBundle\Exception\RuntimeException;
 use JMS\TranslationBundle\Translation\FileSourceFactory;
+use JMS\TranslationBundle\Translation\ConfigFactory;
 use Symfony\Bridge\Twig\Node\TransNode;
 use JMS\TranslationBundle\Model\Message;
 use JMS\TranslationBundle\Model\MessageCatalogue;
@@ -31,6 +32,11 @@ class TwigFileExtractor extends \Twig_BaseNodeVisitor implements FileVisitorInte
      * @var FileSourceFactory
      */
     private $fileSourceFactory;
+
+    /**
+     * @var ConfigFactory $config
+     */
+    private $config;
 
     /**
      * @var \SplFileInfo
@@ -56,11 +62,14 @@ class TwigFileExtractor extends \Twig_BaseNodeVisitor implements FileVisitorInte
      * TwigFileExtractor constructor.
      * @param \Twig_Environment $env
      * @param FileSourceFactory $fileSourceFactory
+     * @param ConfigFactory     $config
      */
-    public function __construct(\Twig_Environment $env, FileSourceFactory $fileSourceFactory)
+    public function __construct(\Twig_Environment $env, FileSourceFactory $fileSourceFactory, ConfigFactory $config)
     {
         $this->fileSourceFactory = $fileSourceFactory;
         $this->traverser = new \Twig_NodeTraverser($env, array($this));
+        // Using first config params, expecting only one set
+        $this->config = $config->getBuilder($config->getNames()[0]);
     }
 
     /**
@@ -109,16 +118,20 @@ class TwigFileExtractor extends \Twig_BaseNodeVisitor implements FileVisitorInte
                     $domain = $argument->getAttribute('value');
                 }
 
-                $message = new Message($id, $domain);
-                $message->addSource($this->fileSourceFactory->create($this->file, $node->getTemplateLine()));
-
                 for ($i=count($this->stack)-2; $i>=0; $i-=1) {
                     if (!$this->stack[$i] instanceof \Twig_Node_Expression_Filter) {
                         break;
                     }
 
                     $name = $this->stack[$i]->getNode('filter')->getAttribute('value');
-                    if ('desc' === $name || 'meaning' === $name) {
+                    if ('desc' === $name || 'descFr' === $name || 'meaning' === $name) {
+                        $currentLocale = $this->config->getConfig()->getLocale();
+
+                        // Skipping desc if does not match currently processed locale
+                        if ($name === 'desc' && $currentLocale !== 'en' || $name === 'descFr' && $currentLocale !== 'fr') {
+                            continue;
+                        }
+
                         $arguments = $this->stack[$i]->getNode('arguments');
                         if (!$arguments->hasNode(0)) {
                             throw new RuntimeException(sprintf('The "%s" filter requires exactly one argument, the description text.', $name));
@@ -129,13 +142,18 @@ class TwigFileExtractor extends \Twig_BaseNodeVisitor implements FileVisitorInte
                             throw new RuntimeException(sprintf('The first argument of the "%s" filter must be a constant expression, such as a string.', $name));
                         }
 
-                        $message->{'set'.$name}($text->getAttribute('value'));
+                        $setter = $name === 'meaning' ? 'setMeaning' : 'setDesc';
+                        $message = new Message($id, $domain);
+                        $message->addSource($this->fileSourceFactory->create($this->file, $node->getTemplateLine()));
+                        $message->{$setter}($text->getAttribute('value'));
                     } elseif ('trans' === $name) {
                         break;
                     }
                 }
 
-                $this->catalogue->add($message);
+                if (isset($message)) {
+                    $this->catalogue->add($message);
+                }
             }
         }
 

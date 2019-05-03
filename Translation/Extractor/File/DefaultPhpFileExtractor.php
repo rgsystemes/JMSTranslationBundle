@@ -23,11 +23,13 @@ use Doctrine\Common\Annotations\DocParser;
 use JMS\TranslationBundle\Model\Message;
 use JMS\TranslationBundle\Annotation\Meaning;
 use JMS\TranslationBundle\Annotation\Desc;
+use JMS\TranslationBundle\Annotation\DescFr;
 use JMS\TranslationBundle\Annotation\Ignore;
 use JMS\TranslationBundle\Translation\Extractor\FileVisitorInterface;
 use JMS\TranslationBundle\Model\MessageCatalogue;
 use JMS\TranslationBundle\Logger\LoggerAwareInterface;
 use JMS\TranslationBundle\Translation\FileSourceFactory;
+use JMS\TranslationBundle\Translation\ConfigFactory;
 use PhpParser\Comment\Doc;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
@@ -48,7 +50,12 @@ class DefaultPhpFileExtractor implements LoggerAwareInterface, FileVisitorInterf
      * @var FileSourceFactory
      */
     private $fileSourceFactory;
-    
+
+    /**
+     * @var ConfigFactory $config
+     */
+    private $config;
+
     /**
      * @var NodeTraverser
      */
@@ -91,15 +98,25 @@ class DefaultPhpFileExtractor implements LoggerAwareInterface, FileVisitorInterf
 
     /**
      * DefaultPhpFileExtractor constructor.
-     * @param DocParser $docParser
+     *
+     * @param DocParser         $docParser
      * @param FileSourceFactory $fileSourceFactory
+     * @param ConfigFactory     $config
      */
-    public function __construct(DocParser $docParser, FileSourceFactory $fileSourceFactory)
+    public function __construct(DocParser $docParser, FileSourceFactory $fileSourceFactory, ConfigFactory $config)
     {
         $this->docParser = $docParser;
+        $this->docParser->setImports(
+            array(
+                'desc' => 'JMS\TranslationBundle\Annotation\Desc',
+                'descfr' => 'JMS\TranslationBundle\Annotation\DescFr'
+            )
+        );
         $this->fileSourceFactory = $fileSourceFactory;
         $this->traverser = new NodeTraverser();
         $this->traverser->addVisitor($this);
+        // Using first config params, expecting only one set
+        $this->config = $config->getBuilder($config->getNames()[0]);
     }
 
     /**
@@ -132,13 +149,21 @@ class DefaultPhpFileExtractor implements LoggerAwareInterface, FileVisitorInterf
             foreach ($this->docParser->parse($docComment, 'file '.$this->file.' near line '.$node->getLine()) as $annot) {
                 if ($annot instanceof Ignore) {
                     $ignore = true;
-                } elseif ($annot instanceof Desc) {
-                    $desc = $annot->text;
                 } elseif ($annot instanceof Meaning) {
                     $meaning = $annot->text;
+                } else {
+                    $currentLocale = $this->config->getConfig()->getLocale();
+
+                    // Considering annot only if does not match currently processed locale
+                    if ($annot instanceof Desc && $currentLocale === 'en' || $annot instanceof DescFr && $currentLocale === 'fr') {
+                        $desc = $annot->text;
+                    }
                 }
             }
         }
+
+        if (!$ignore && !$desc && !$meaning)
+            return;
 
         if (!$node->args[0]->value instanceof String_) {
             if ($ignore) {

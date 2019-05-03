@@ -20,6 +20,7 @@ namespace JMS\TranslationBundle\Twig;
 
 /**
  * Provides some extensions for specifying translation metadata.
+ * Added french description handling using descFr filter
  *
  * @author Johannes M. Schmitt <schmittjoh@gmail.com>
  */
@@ -28,8 +29,8 @@ use Symfony\Component\Translation\TranslatorInterface;
 class TranslationExtension extends \Twig_Extension
 {
     /**
-     * @var TranslatorInterface
-     */
+ * @var TranslatorInterface
+ */
     private $translator;
 
     /**
@@ -72,6 +73,7 @@ class TranslationExtension extends \Twig_Extension
     {
         return array(
             new \Twig_SimpleFilter('desc', array($this, 'desc')),
+            new \Twig_SimpleFilter('descFr', array($this, 'descFr')),
             new \Twig_SimpleFilter('meaning', array($this, 'meaning')),
         );
     }
@@ -109,6 +111,14 @@ class TranslationExtension extends \Twig_Extension
      */
     public function desc($v)
     {
+        return $v;
+    }
+
+    public function descFr($v, $w = null)
+    {
+        if ($w && $this->translator->getLocale() === 'fr')
+            return $w;
+
         return $v;
     }
 
